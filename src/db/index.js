@@ -1,15 +1,17 @@
+require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
-const Database = require('better-sqlite3');
+const { Pool, types } = require('pg');
 
-const dbPath = path.join(__dirname, 'estoque.db');
-const db = new Database(dbPath);
+types.setTypeParser(1700, (value) => parseFloat(value));
 
-db.pragma('foreign_keys = ON');
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+});
 
+async function initDb() {
+    const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+    await pool.query(schema);
+}
 
-
-const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-db.exec(schema);
-
-module.exports = db;
+module.exports = { pool, initDb };

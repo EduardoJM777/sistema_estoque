@@ -1,27 +1,28 @@
 const express = require('express');
-const db = require('../db');
+const { pool } = require('../db');
 
 const router = express.Router();
 
 
-router.get('/', (req, res) => {
-    const rows = db.prepare(`
+router.get('/', async (req, res) => {
+    const { rows } = await pool.query(`
         SELECT m.*, p.name AS product_name
         FROM movements m
         JOIN products p ON p.id = m.product_id
         ORDER BY m.id DESC    
-    `).all();
+    `);
     res.json(rows);
 });
 
-router.get('/product/:productId', (req, res) => {
-    const rows = db.prepare(`
-        SELECT * FROM movements WHERE product_id = ? ORDER BY id DESC    
-    `).all(req.params.productId);
+router.get('/product/:productId', async (req, res) => {
+    const { rows } = await pool.query(
+        'SELECT * FROM movements WHERE product_id = $1 ORDER BY id DESC',
+        [req.params.productId]
+    );
     res.json(rows);
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     const { product_id, type, quantity, reason } = req.body;
 
     if (!product_id || !type || !quantity) {
@@ -30,27 +31,46 @@ router.post('/', (req, res) => {
     if (!['IN', 'OUT'].includes(type)) {
         return res.status(400).json({ error: "type deve ser 'IN' ou 'OUT'"});
     }
-    if (quantity <= 0) {
-        return res.status(400).json({ error: 'quantity deve ser maior que zero' });
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+        return res.status(400).json({ error: 'quantity deve ser um inteiro maior que zero' });
     }
 
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(product_id);
-    if (!product) return res.status(404).json({ error: 'Produto não encontrado' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
 
-    if (type === 'OUT' && product.quantity < quantity) {
-        return res.status(400).json({ error: 'Estoque insuficiente para essa saída' });
+        const { rows: found } = await client.query(
+            'SELECT * FROM products WHERE id = $1 FOR UPDATE',
+            [product_id]
+        );
+        if (found.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Produto não encontrado' });
+        }
+
+        if (type === 'OUT' && found[0].quantity < quantity) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Estoque insuficiente para essa saída' });
+        }
+
+        const { rows: inserted } = await client.query(
+            `INSERT INTO movements (product_id, type, quantity, reason)
+             VALUES ($1, $2, $3, $4)
+             RETURNING *`,
+             [product_id, type, quantity, reason || null]
+        );
+
+        const { rows: updated } = await client.query('SELECT * FROM products WHERE id = $1', [product_id]);
+
+        await client.query('COMMIT');
+        res.status(201).json({ movement: inserted[0], product: updated[0] });
+    }catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
     }
 
-    const stmt = db.prepare(`
-        INSERT INTO movements (product_id, type, quantity, reason)
-        VALUES (?, ?, ?, ?)    
-    `);
-    const result = stmt.run(product_id, type, quantity, reason || null);
-
-    const movement = db.prepare('SELECT * FROM movements WHERE id = ?').get(result.lastInsertRowid);
-    const updatedProduct = db.prepare('SELECT * FROM products WHERE id = ?').get(product_id);
-
-    res.status(201).json({ movement, product: updatedProduct });
 });
 
 module.exports = router;
