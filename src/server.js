@@ -1,4 +1,6 @@
+require('dotenv').config();
 const express = require('express');
+const { initDb } = require('./db');
 
 const productsRouter = require('./routes/products');
 const movementsRouter = require('./routes/movements');
@@ -32,7 +34,33 @@ app.use('/products', productsRouter);
 app.use('/movements', movementsRouter);
 app.use('/', catalogRouter);
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Servidor rodando em http://localhost:${PORT}`);
+app.use((err, req, res, next) => {
+    switch(err.code) {
+        case '22P02':
+            return res.status(400).json({ error: 'Valor inválido em um dos parâmetros' });
+        case '23503':
+            return res.status(409).json({
+                error: 'Operação viola um relacionamento (registro referenciado não existe ou ainda está em uso)',
+            });
+        case '23505':
+            return res.status(409).json({ error: 'Já existe um registro com esse valor' });
+        case '23514':
+            return res.status(400).json({ error: 'Valor não permitido pelas regras do banco' });
+        default:
+            console.error(err);
+            return res.status(500).json({ error: 'Erro interno do servidor' });            
+    }
 });
+
+const PORT = process.env.PORT || 3000;
+
+initDb()
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`Servidor rodando em http://localhost:${PORT}`);
+        });
+    })
+    .catch((err) => {
+        console.error('Falha ao inicializar o banco de dados:', err.message);
+        process.exit(1);
+    });
